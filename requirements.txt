@@ -4,4 +4,3 @@ scipy
 textblob 
 scikit-learn 
 matplotlib
-warnings
