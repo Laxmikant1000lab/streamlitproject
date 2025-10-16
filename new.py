@@ -22,8 +22,7 @@ logger = logging.getLogger(__name__)
 # Google Drive direct download URLs (replace with your actual links)
 MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1wZY1z-YfHAPZMRVYcx8rD8MeR4t_c_nC"
 RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1pR3LYyvl7kUIJ0R0KkGoOYN8DKhNOIFJ"
-# Optional: Precomputed similarity matrix (upload to Google Drive if used)
-SIMILARITY_MATRIX_URL = "https://drive.google.com/uc?export=download&id=YOUR_SIMILARITY_MATRIX_FILE_ID"
+
 
 class EnhancedMovieRecommender:
     def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL, similarity_url=None):
@@ -89,13 +88,7 @@ class EnhancedMovieRecommender:
         # Load or compute similarity matrix
         logger.info(self.progress_steps[6])
         st.write(self.progress_steps[6])
-        if similarity_url:
-            st.write("Loading precomputed similarity matrix...")
-            self._download_with_timeout(similarity_url, self.similarity_file)
-            with open(self.similarity_file, 'rb') as f:
-                self.similarity_matrix = pickle.load(f)
-        else:
-            self._build_similarity_matrix()
+        self._build_similarity_matrix()
         
         logger.info(self.progress_steps[7])
         st.write(self.progress_steps[7])
