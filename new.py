@@ -9,6 +9,9 @@ import urllib.request
 import os
 import logging
 import warnings
+import time
+import requests
+from urllib.error import URLError
 warnings.filterwarnings('ignore')
 
 # Configure logging
@@ -22,25 +25,37 @@ RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1pR3LYyvl7k
 class EnhancedMovieRecommender:
     def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL):
         """Initialize the recommender system with data from Google Drive URLs."""
-        # Temporary file paths for downloaded CSVs
         self.movies_file = "movies_temp.csv"
         self.ratings_file = "ratings_temp.csv"
         
+        # Progress tracking
+        self.progress_steps = [
+            "Downloading movies data",
+            "Downloading ratings data",
+            "Loading movies data",
+            "Loading ratings data",
+            "Preprocessing genres",
+            "Computing rating stats",
+            "Building similarity matrix",
+            "Building user-based model"
+        ]
+        self.current_step = 0
+        
         try:
-            # Download files from Google Drive
-            logger.info(f"Downloading movies data from {movies_url}")
-            urllib.request.urlretrieve(movies_url, self.movies_file)
-            logger.info(f"Downloading ratings data from {ratings_url}")
-            urllib.request.urlretrieve(ratings_url, self.ratings_file)
+            # Download files with timeout
+            logger.info(self.progress_steps[0])
+            self._download_with_timeout(movies_url, self.movies_file)
+            logger.info(self.progress_steps[1])
+            self._download_with_timeout(ratings_url, self.ratings_file)
             
-            # Load data into DataFrames
-            logger.info(f"Loading movies from {self.movies_file}")
+            # Load data
+            logger.info(self.progress_steps[2])
             self.movies = pd.read_csv(self.movies_file)
-            logger.info(f"Loading ratings from {self.ratings_file}")
+            logger.info(self.progress_steps[3])
             self.ratings = pd.read_csv(self.ratings_file)
-        except urllib.error.URLError as e:
-            logger.error(f"Failed to download files: {e}")
-            raise Exception(f"Failed to download files from Google Drive: {e}")
+        except URLError as e:
+            logger.error(f"Network error during download: {e}")
+            raise Exception(f"Network error downloading files: {e}")
         except FileNotFoundError as e:
             logger.error(f"File not found after download: {e}")
             raise FileNotFoundError(f"File not found after download: {e}")
@@ -51,20 +66,28 @@ class EnhancedMovieRecommender:
             logger.error(f"Error loading data: {e}")
             raise Exception(f"Error loading data: {e}")
         
-        # Clean up temporary files (optional, keep for debugging)
-        # if os.path.exists(self.movies_file):
-        #     os.remove(self.movies_file)
-        # if os.path.exists(self.ratings_file):
-        #     os.remove(self.ratings_file)
-        
         self.global_avg = self.ratings['rating'].mean()
         self.m = 10
+        logger.info(self.progress_steps[4])
         self.movies['year'] = self.movies['title'].str.extract(r'\((\d{4})\)', expand=False).astype(float)
         self._preprocess_genres()
+        logger.info(self.progress_steps[5])
         self._compute_rating_stats()
+        logger.info(self.progress_steps[6])
         self._build_similarity_matrix()
+        logger.info(self.progress_steps[7])
         self._build_user_based_model()
         
+    def _download_with_timeout(self, url, output_path, timeout=30):
+        """Download file with a timeout."""
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+        except requests.exceptions.RequestException as e:
+            raise URLError(f"Failed to download {url}: {e}")
+    
     def _preprocess_genres(self):
         self.movies['genres_list'] = self.movies['genres'].str.split('|')
         all_genres = [g for sublist in self.movies['genres_list'] for g in sublist]
@@ -97,7 +120,6 @@ class EnhancedMovieRecommender:
         })
         
     def _build_similarity_matrix(self):
-        logger.info("Building similarity matrix...")
         tfidf_array = self.tfidf_matrix.values
         cosine_sims = cosine_similarity(tfidf_array)
         self.cosine_sim_matrix = pd.DataFrame(
@@ -127,7 +149,7 @@ class EnhancedMovieRecommender:
     
     def _build_user_based_model(self):
         user_item_matrix = self.ratings.pivot(index='userId', columns='movieId', values='rating').fillna(0)
-        svd = TruncatedSVD(n_components=50, random_state=42)
+        svd = TruncatedSVD(n_components=20, random_state=42)  # Reduced components
         user_features = svd.fit_transform(user_item_matrix)
         self.user_similarity = cosine_similarity(user_features)
         self.user_similarity_df = pd.DataFrame(
@@ -191,7 +213,9 @@ class EnhancedMovieRecommender:
                 (candidates['year'].ge(year_range[0]) | candidates['year'].isna()) & 
                 (candidates['year'].le(year_range[1]) | candidates['year'].isna())
             ]
-        candidates = candidates[candidates['movieId'] != query_movie_id]
+        candidates = candidates[candidates['movieId'] != queryਦ
+
+System: query_movie_id]
         if user_id is not None:
             user_ratings = self.ratings[self.ratings['userId'] == user_id]
             seen_movies = user_ratings['movieId'].unique()
@@ -280,17 +304,23 @@ def main():
     # Cache the recommender
     @st.cache_resource
     def load_recommender():
-        return EnhancedMovieRecommender()
+        st.write("Initializing recommender...")
+        recommender = EnhancedMovieRecommender()
+        st.write("Recommender initialized!")
+        return recommender
     
-    # Load recommender with error handling
+    # Load recommender with error handling and progress bar
     try:
+        progress_bar = st.progress(0)
         recommender = load_recommender()
+        progress_bar.progress(100)
     except Exception as e:
         st.error(f"Failed to initialize recommender: {e}")
         st.markdown("**Possible fixes:**")
         st.markdown("- Ensure the Google Drive links for `movies.csv` and `ratings.csv` are correct and publicly accessible.")
         st.markdown("- Check your internet connection.")
-        st.markdown("- Verify that the files are not corrupted.")
+        st.markdown("- Try using a smaller dataset (e.g., MovieLens 100K).")
+        st.markdown("- Clear the cache using the button below.")
         return
     
     # Sidebar for settings
