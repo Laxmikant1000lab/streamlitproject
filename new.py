@@ -12,6 +12,7 @@ import warnings
 import time
 import requests
 from urllib.error import URLError
+import pickle
 warnings.filterwarnings('ignore')
 
 # Configure logging
@@ -21,12 +22,15 @@ logger = logging.getLogger(__name__)
 # Google Drive direct download URLs (replace with your actual links)
 MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1wZY1z-YfHAPZMRVYcx8rD8MeR4t_c_nC"
 RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1pR3LYyvl7kUIJ0R0KkGoOYN8DKhNOIFJ"
+# Optional: Precomputed similarity matrix (upload to Google Drive if used)
+SIMILARITY_MATRIX_URL = "https://drive.google.com/uc?export=download&id=YOUR_SIMILARITY_MATRIX_FILE_ID"
 
 class EnhancedMovieRecommender:
-    def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL):
+    def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL, similarity_url=None):
         """Initialize the recommender system with data from Google Drive URLs."""
         self.movies_file = "movies_temp.csv"
         self.ratings_file = "ratings_temp.csv"
+        self.similarity_file = "similarity_matrix.pkl"
         
         # Progress tracking
         self.progress_steps = [
@@ -81,9 +85,18 @@ class EnhancedMovieRecommender:
         logger.info(self.progress_steps[5])
         st.write(self.progress_steps[5])
         self._compute_rating_stats()
+        
+        # Load or compute similarity matrix
         logger.info(self.progress_steps[6])
         st.write(self.progress_steps[6])
-        self._build_similarity_matrix()
+        if similarity_url:
+            st.write("Loading precomputed similarity matrix...")
+            self._download_with_timeout(similarity_url, self.similarity_file)
+            with open(self.similarity_file, 'rb') as f:
+                self.similarity_matrix = pickle.load(f)
+        else:
+            self._build_similarity_matrix()
+        
         logger.info(self.progress_steps[7])
         st.write(self.progress_steps[7])
         self._build_user_based_model()
@@ -130,13 +143,30 @@ class EnhancedMovieRecommender:
         })
         
     def _build_similarity_matrix(self):
+        # Limit to top N movies by number of ratings to reduce computation
+        top_n_movies = 5000  # Adjust based on available memory
+        if len(self.movies) > top_n_movies:
+            st.write(f"Limiting similarity matrix to top {top_n_movies} movies by rating count...")
+            top_movies = self.movies.sort_values('num_ratings', ascending=False).head(top_n_movies)
+            self.movies = top_movies
+            self.tfidf_matrix = self.tfidf_matrix.loc[top_movies['movieId']]
+        
+        st.write("Computing cosine similarity...")
         tfidf_array = self.tfidf_matrix.values
         cosine_sims = cosine_similarity(tfidf_array)
         self.cosine_sim_matrix = pd.DataFrame(
             cosine_sims, index=self.tfidf_matrix.index, columns=self.tfidf_matrix.index
         )
+        
+        st.write("Computing Jaccard similarity...")
         self.jaccard_sim_matrix = self._compute_jaccard_similarity()
+        
+        st.write("Combining similarity matrices...")
         self.similarity_matrix = 0.7 * self.cosine_sim_matrix + 0.3 * self.jaccard_sim_matrix
+        
+        # Optional: Save similarity matrix to avoid recomputation
+        # with open(self.similarity_file, 'wb') as f:
+        #     pickle.dump(self.similarity_matrix, f)
         
     def _compute_jaccard_similarity(self):
         jaccard_matrix = pd.DataFrame(
@@ -144,17 +174,24 @@ class EnhancedMovieRecommender:
             index=self.movies['movieId'], 
             columns=self.movies['movieId']
         )
+        total_pairs = len(self.movies) * (len(self.movies) - 1) // 2
+        processed_pairs = 0
         for i, (_, movie1) in enumerate(self.movies.iterrows()):
             for j, (_, movie2) in enumerate(self.movies.iterrows()):
                 if i == j:
                     jaccard_matrix.iloc[i, j] = 1.0
                     continue
-                set1 = set(movie1['genres_list'])
-                set2 = set(movie2['genres_list'])
-                intersection = len(set1.intersection(set2))
-                union = len(set1.union(set2))
-                sim = intersection / union if union > 0 else 0
-                jaccard_matrix.iloc[i, j] = sim
+                if i < j:  # Only compute upper triangle to save time
+                    set1 = set(movie1['genres_list'])
+                    set2 = set(movie2['genres_list'])
+                    intersection = len(set1.intersection(set2))
+                    union = len(set1.union(set2))
+                    sim = intersection / union if union > 0 else 0
+                    jaccard_matrix.iloc[i, j] = sim
+                    jaccard_matrix.iloc[j, i] = sim  # Mirror to lower triangle
+                    processed_pairs += 1
+                    if processed_pairs % 10000 == 0:
+                        st.write(f"Processed {processed_pairs}/{total_pairs} movie pairs...")
         return jaccard_matrix
     
     def _build_user_based_model(self):
@@ -313,7 +350,7 @@ def main():
     @st.cache_resource
     def load_recommender():
         st.write("Initializing recommender...")
-        recommender = EnhancedMovieRecommender()
+        recommender = EnhancedMovieRecommender(similarity_url=SIMILARITY_MATRIX_URL)
         st.write("Recommender initialized!")
         return recommender
     
@@ -325,7 +362,7 @@ def main():
     except Exception as e:
         st.error(f"Failed to initialize recommender: {e}")
         st.markdown("**Possible fixes:**")
-        st.markdown("- Ensure the Google Drive links for `movies.csv` and `ratings.csv` are correct and publicly accessible.")
+        st.markdown("- Ensure the Google Drive links for `movies.csv`, `ratings.csv`, and `similarity_matrix.pkl` (if used) are correct and publicly accessible.")
         st.markdown("- Check your internet connection.")
         st.markdown("- Try using a smaller dataset (e.g., MovieLens 100K).")
         st.markdown("- Clear the cache using the button below.")
