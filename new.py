@@ -213,7 +213,7 @@ class EnhancedMovieRecommender:
                 (candidates['year'].ge(year_range[0]) | candidates['year'].isna()) & 
                 (candidates['year'].le(year_range[1]) | candidates['year'].isna())
             ]
-        candidates = candidates[candidates['movieId'] != query
+        candidates = candidates[candidates['movieId'] != query_movie_id]
 
 System: query_movie_id]
         if user_id is not None:
