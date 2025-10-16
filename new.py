@@ -19,8 +19,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Google Drive direct download URLs (replace with your actual links)
-MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1wZY1z-YfHAPZMRVYcx8rD8MeR4t_c_nC"
-RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1pR3LYyvl7kUIJ0R0KkGoOYN8DKhNOIFJ"
+MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=YOUR_MOVIES_FILE_ID"
+RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=YOUR_RATINGS_FILE_ID"
 
 class EnhancedMovieRecommender:
     def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL):
@@ -44,15 +44,21 @@ class EnhancedMovieRecommender:
         try:
             # Download files with timeout
             logger.info(self.progress_steps[0])
+            st.write(self.progress_steps[0])
             self._download_with_timeout(movies_url, self.movies_file)
             logger.info(self.progress_steps[1])
+            st.write(self.progress_steps[1])
             self._download_with_timeout(ratings_url, self.ratings_file)
             
             # Load data
             logger.info(self.progress_steps[2])
+            st.write(self.progress_steps[2])
             self.movies = pd.read_csv(self.movies_file)
             logger.info(self.progress_steps[3])
+            st.write(self.progress_steps[3])
             self.ratings = pd.read_csv(self.ratings_file)
+            # Optional: Downsample ratings for large datasets
+            # self.ratings = self.ratings.sample(frac=0.1, random_state=42)
         except URLError as e:
             logger.error(f"Network error during download: {e}")
             raise Exception(f"Network error downloading files: {e}")
@@ -69,13 +75,17 @@ class EnhancedMovieRecommender:
         self.global_avg = self.ratings['rating'].mean()
         self.m = 10
         logger.info(self.progress_steps[4])
+        st.write(self.progress_steps[4])
         self.movies['year'] = self.movies['title'].str.extract(r'\((\d{4})\)', expand=False).astype(float)
         self._preprocess_genres()
         logger.info(self.progress_steps[5])
+        st.write(self.progress_steps[5])
         self._compute_rating_stats()
         logger.info(self.progress_steps[6])
+        st.write(self.progress_steps[6])
         self._build_similarity_matrix()
         logger.info(self.progress_steps[7])
+        st.write(self.progress_steps[7])
         self._build_user_based_model()
         
     def _download_with_timeout(self, url, output_path, timeout=30):
