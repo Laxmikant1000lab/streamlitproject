@@ -1,3 +1,265 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from scipy.spatial.distance import cosine
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.decomposition import TruncatedSVD
+from collections import Counter
+import urllib.request
+import os
+import logging
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Google Drive direct download URLs (replace with your actual links)
+MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=YOUR_MOVIES_FILE_ID"
+RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=YOUR_RATINGS_FILE_ID"
+
+class EnhancedMovieRecommender:
+    def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL):
+        """Initialize the recommender system with data from Google Drive URLs."""
+        # Temporary file paths for downloaded CSVs
+        self.movies_file = "movies_temp.csv"
+        self.ratings_file = "ratings_temp.csv"
+        
+        try:
+            # Download files from Google Drive
+            logger.info(f"Downloading movies data from {movies_url}")
+            urllib.request.urlretrieve(movies_url, self.movies_file)
+            logger.info(f"Downloading ratings data from {ratings_url}")
+            urllib.request.urlretrieve(ratings_url, self.ratings_file)
+            
+            # Load data into DataFrames
+            logger.info(f"Loading movies from {self.movies_file}")
+            self.movies = pd.read_csv(self.movies_file)
+            logger.info(f"Loading ratings from {self.ratings_file}")
+            self.ratings = pd.read_csv(self.ratings_file)
+        except urllib.error.URLError as e:
+            logger.error(f"Failed to download files: {e}")
+            raise Exception(f"Failed to download files from Google Drive: {e}")
+        except FileNotFoundError as e:
+            logger.error(f"File not found after download: {e}")
+            raise FileNotFoundError(f"File not found after download: {e}")
+        except PermissionError as e:
+            logger.error(f"Permission denied: {e}")
+            raise PermissionError(f"Permission denied: {e}")
+        except Exception as e:
+            logger.error(f"Error loading data: {e}")
+            raise Exception(f"Error loading data: {e}")
+        
+        # Clean up temporary files (optional, keep for debugging)
+        # if os.path.exists(self.movies_file):
+        #     os.remove(self.movies_file)
+        # if os.path.exists(self.ratings_file):
+        #     os.remove(self.ratings_file)
+        
+        self.global_avg = self.ratings['rating'].mean()
+        self.m = 10
+        self.movies['year'] = self.movies['title'].str.extract(r'\((\d{4})\)', expand=False).astype(float)
+        self._preprocess_genres()
+        self._compute_rating_stats()
+        self._build_similarity_matrix()
+        self._build_user_based_model()
+        
+    def _preprocess_genres(self):
+        self.movies['genres_list'] = self.movies['genres'].str.split('|')
+        all_genres = [g for sublist in self.movies['genres_list'] for g in sublist]
+        genre_counts = Counter(all_genres)
+        N = len(self.movies)
+        self.idf = {genre: np.log(N / count) for genre, count in genre_counts.items()}
+        unique_genres = list(self.idf.keys())
+        self.tfidf_matrix = pd.DataFrame(0.0, index=self.movies['movieId'], columns=unique_genres)
+        for idx, row in self.movies.iterrows():
+            for genre in row['genres_list']:
+                self.tfidf_matrix.loc[row['movieId'], genre] = self.idf[genre]
+        total_movies = len(self.movies)
+        self.genre_importance = {genre: count / total_movies for genre, count in genre_counts.items()}
+        
+    def _compute_rating_stats(self):
+        movie_stats = self.ratings.groupby('movieId').agg(
+            avg_rating=('rating', 'mean'),
+            num_ratings=('rating', 'count'),
+            std_rating=('rating', 'std')
+        ).reset_index()
+        movie_stats['weighted_rating'] = (
+            (movie_stats['num_ratings'] * movie_stats['avg_rating'] + self.m * self.global_avg) /
+            (movie_stats['num_ratings'] + self.m)
+        )
+        movie_stats['confidence'] = 1 / (1 + movie_stats['std_rating'].fillna(0))
+        movie_stats['confidence'] *= np.log1p(movie_stats['num_ratings'])
+        self.movies = self.movies.merge(movie_stats, on='movieId', how='left').fillna({
+            'num_ratings': 0, 'avg_rating': self.global_avg, 'std_rating': 1.0,
+            'weighted_rating': self.global_avg, 'confidence': 0
+        })
+        
+    def _build_similarity_matrix(self):
+        logger.info("Building similarity matrix...")
+        tfidf_array = self.tfidf_matrix.values
+        cosine_sims = cosine_similarity(tfidf_array)
+        self.cosine_sim_matrix = pd.DataFrame(
+            cosine_sims, index=self.tfidf_matrix.index, columns=self.tfidf_matrix.index
+        )
+        self.jaccard_sim_matrix = self._compute_jaccard_similarity()
+        self.similarity_matrix = 0.7 * self.cosine_sim_matrix + 0.3 * self.jaccard_sim_matrix
+        
+    def _compute_jaccard_similarity(self):
+        jaccard_matrix = pd.DataFrame(
+            np.zeros((len(self.movies), len(self.movies))), 
+            index=self.movies['movieId'], 
+            columns=self.movies['movieId']
+        )
+        for i, (_, movie1) in enumerate(self.movies.iterrows()):
+            for j, (_, movie2) in enumerate(self.movies.iterrows()):
+                if i == j:
+                    jaccard_matrix.iloc[i, j] = 1.0
+                    continue
+                set1 = set(movie1['genres_list'])
+                set2 = set(movie2['genres_list'])
+                intersection = len(set1.intersection(set2))
+                union = len(set1.union(set2))
+                sim = intersection / union if union > 0 else 0
+                jaccard_matrix.iloc[i, j] = sim
+        return jaccard_matrix
+    
+    def _build_user_based_model(self):
+        user_item_matrix = self.ratings.pivot(index='userId', columns='movieId', values='rating').fillna(0)
+        svd = TruncatedSVD(n_components=50, random_state=42)
+        user_features = svd.fit_transform(user_item_matrix)
+        self.user_similarity = cosine_similarity(user_features)
+        self.user_similarity_df = pd.DataFrame(
+            self.user_similarity, 
+            index=user_item_matrix.index, 
+            columns=user_item_matrix.index
+        )
+        self.item_features = pd.DataFrame(svd.components_.T, index=user_item_matrix.columns)
+    
+    def _predict_user_rating(self, user_id, movie_id):
+        if user_id not in self.user_similarity_df.index:
+            return self.movies.loc[self.movies['movieId'] == movie_id, 'weighted_rating'].iloc[0]
+        user_idx = self.user_similarity_df.index.get_loc(user_id)
+        similar_users = self.user_similarity_df.iloc[user_idx].sort_values(ascending=False).iloc[1:11]
+        total_weight = 0
+        weighted_sum = 0
+        for sim_user, similarity in similar_users.items():
+            if similarity < 0.1:
+                break
+            user_ratings = self.ratings[self.ratings['userId'] == sim_user]
+            user_rating = user_ratings[user_ratings['movieId'] == movie_id]
+            if not user_rating.empty:
+                rating = user_rating['rating'].iloc[0]
+                weighted_sum += similarity * (rating - self.global_avg)
+                total_weight += similarity
+        if total_weight > 0:
+            prediction = self.global_avg + weighted_sum / total_weight
+            return np.clip(prediction, 0.5, 5.0)
+        return self.movies.loc[self.movies['movieId'] == movie_id, 'weighted_rating'].iloc[0]
+    
+    def _compute_diversity_score(self, movie_id, recommendations):
+        query_genres = set(self.movies.loc[self.movies['movieId'] == movie_id, 'genres_list'].iloc[0])
+        total_diversity = 0
+        for rec_id in recommendations['movieId']:
+            rec_genres = set(self.movies.loc[self.movies['movieId'] == rec_id, 'genres_list'].iloc[0])
+            unique_genres = len(rec_genres - query_genres)
+            total_diversity += unique_genres
+        return total_diversity / len(recommendations)
+    
+    def recommend_similar_movies(self, query_movie_title, user_id=None, top_n=10, 
+                               year_range=None, min_similarity=0.1, diversity_weight=0.2):
+        query_movie = self.movies[self.movies['title'] == query_movie_title]
+        if query_movie.empty:
+            return "Movie not found."
+        query_movie_id = query_movie['movieId'].iloc[0]
+        query_genres = set(query_movie['genres_list'].iloc[0])
+        similarities = self.similarity_matrix[query_movie_id].copy()
+        candidates = pd.DataFrame({
+            'movieId': similarities.index,
+            'similarity': similarities.values,
+            'content_score': similarities.values
+        })
+        candidates = candidates.merge(
+            self.movies[['movieId', 'title', 'genres_list', 'weighted_rating', 
+                        'num_ratings', 'confidence', 'year']], on='movieId'
+        )
+        candidates = candidates[candidates['num_ratings'] >= self.m]
+        candidates = candidates[candidates['similarity'] >= min_similarity]
+        if year_range:
+            candidates = candidates[
+                (candidates['year'].ge(year_range[0]) | candidates['year'].isna()) & 
+                (candidates['year'].le(year_range[1]) | candidates['year'].isna())
+            ]
+        candidates = candidates[candidates['movieId'] != query_movie_id]
+        if user_id is not None:
+            user_ratings = self.ratings[self.ratings['userId'] == user_id]
+            seen_movies = user_ratings['movieId'].unique()
+            candidates = candidates[~candidates['movieId'].isin(seen_movies)]
+            predicted_ratings = [self._predict_user_rating(user_id, row['movieId']) for _, row in candidates.iterrows()]
+            candidates['predicted_rating'] = predicted_ratings
+        else:
+            candidates['predicted_rating'] = candidates['weighted_rating']
+        candidates['quality_score'] = candidates['predicted_rating'] * candidates['confidence']
+        if len(candidates) > 1:
+            candidates['diversity_score'] = candidates['movieId'].apply(
+                lambda x: self._compute_diversity_score(query_movie_id, candidates)
+            )
+        else:
+            candidates['diversity_score'] = 1.0
+        candidates['final_score'] = (
+            candidates['similarity'] * candidates['quality_score'] * 
+            (1 + diversity_weight * candidates['diversity_score'])
+        )
+        top_recs = candidates.sort_values('final_score', ascending=False).head(top_n)
+        results = []
+        for _, row in top_recs.iterrows():
+            explanation = self._generate_explanation(query_movie_id, row)
+            results.append({
+                'title': row['title'],
+                'year': row['year'],
+                'similarity': row['similarity'],
+                'predicted_rating': row['predicted_rating'],
+                'final_score': row['final_score'],
+                'explanation': explanation
+            })
+        return pd.DataFrame(results)
+    
+    def _generate_explanation(self, query_id, recommendation):
+        query_genres = set(self.movies.loc[self.movies['movieId'] == query_id, 'genres_list'].iloc[0])
+        rec_genres = set(recommendation['genres_list'])
+        shared_genres = query_genres.intersection(rec_genres)
+        important_genres = sorted(shared_genres, 
+                                key=lambda g: self.genre_importance.get(g, 0), 
+                                reverse=True)[:3]
+        explanation_parts = []
+        explanation_parts.append(f"Similarity: {recommendation['similarity']:.2f}")
+        explanation_parts.append(f"Predicted Rating: {recommendation['predicted_rating']:.1f}")
+        if len(important_genres) > 0:
+            genre_text = ", ".join([f"{g} ({self.genre_importance[g]:.1%} rarity)" 
+                                  for g in important_genres])
+            explanation_parts.append(f"Key Matches: {genre_text}")
+        if 'confidence' in recommendation and recommendation['confidence'] > 0.8:
+            explanation_parts.append("High confidence based on many ratings")
+        return " | ".join(explanation_parts)
+    
+    def get_movie_info(self, movie_title):
+        movie = self.movies[self.movies['title'] == movie_title]
+        if movie.empty:
+            return None
+        movie_info = movie.iloc[0]
+        genres = "|".join(movie_info['genres_list'])
+        return {
+            'title': movie_info['title'],
+            'year': movie_info['year'],
+            'genres': genres,
+            'avg_rating': movie_info['avg_rating'],
+            'weighted_rating': movie_info['weighted_rating'],
+            'num_ratings': movie_info['num_ratings'],
+            'confidence': movie_info['confidence']
+        }
+
+# Streamlit Interface
 def main():
     st.set_page_config(page_title="Movie Recommender System", layout="wide")
     
@@ -20,10 +282,23 @@ def main():
     def load_recommender():
         return EnhancedMovieRecommender()
     
-    recommender = load_recommender()
+    # Load recommender with error handling
+    try:
+        recommender = load_recommender()
+    except Exception as e:
+        st.error(f"Failed to initialize recommender: {e}")
+        st.markdown("**Possible fixes:**")
+        st.markdown("- Ensure the Google Drive links for `movies.csv` and `ratings.csv` are correct and publicly accessible.")
+        st.markdown("- Check your internet connection.")
+        st.markdown("- Verify that the files are not corrupted.")
+        return
     
     # Sidebar for settings
     st.sidebar.header("⚙️ Settings")
+    if st.sidebar.button("Clear Cache"):
+        st.cache_resource.clear()
+        st.success("Cache cleared! Please refresh the page.")
+    
     user_id = st.sidebar.selectbox(
         "Personalize for User",
         ["None"] + sorted([f"User {uid}" for uid in recommender.ratings['userId'].unique()]),
@@ -74,7 +349,6 @@ def main():
                 if isinstance(recommendations, str):
                     st.error(recommendations)
                 else:
-                    # Display movie info
                     movie_info = recommender.get_movie_info(query_title)
                     if movie_info:
                         st.subheader(f"📽️ About {query_title}")
@@ -86,12 +360,11 @@ def main():
                         with col_c:
                             st.metric("Number of Ratings", f"{int(movie_info['num_ratings']):,}")
                         st.markdown(f"**Genres:** {movie_info['genres']}")
-                        st.markdown(f"**Year:** {int(movie_info['year'])}")
+                        st.markdown(f"**Year:** {int(movie_info['year'])}" if not pd.isna(movie_info['year']) else "**Year:** Unknown")
                     
-                    # Display recommendations
                     st.subheader("🎬 Top Recommendations")
                     for idx, rec in recommendations.iterrows():
-                        with st.expander(f"{idx+1}. {rec['title']} ({int(rec['year'])})"):
+                        with st.expander(f"{idx+1}. {rec['title']} ({int(rec['year']) if not pd.isna(rec['year']) else 'Unknown'})"):
                             st.markdown(f"**Score:** {rec['final_score']:.3f}")
                             st.markdown(f"**Similarity:** {rec['similarity']:.2f}")
                             st.markdown(f"**Predicted Rating:** {rec['predicted_rating']:.1f}/5")
@@ -106,7 +379,6 @@ def main():
         st.metric("Average Rating", f"{recommender.global_avg:.2f}/5")
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Genre distribution chart
         genre_counts = Counter([g for sublist in recommender.movies['genres_list'] for g in sublist])
         genre_df = pd.DataFrame.from_dict(genre_counts, orient='index', columns=['count']).sort_values('count', ascending=False)
         st.subheader("📈 Genre Distribution")
