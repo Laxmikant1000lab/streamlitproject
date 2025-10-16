@@ -29,7 +29,7 @@ class EnhancedMovieRecommender:
         """Initialize the recommender system with data from Google Drive URLs."""
         self.movies_file = "movies_temp.csv"
         self.ratings_file = "ratings_temp.csv"
-        self.similarity_file = "similarity_matrix.pkl"
+        
         
         # Progress tracking
         self.progress_steps = [
