@@ -213,9 +213,7 @@ class EnhancedMovieRecommender:
                 (candidates['year'].ge(year_range[0]) | candidates['year'].isna()) & 
                 (candidates['year'].le(year_range[1]) | candidates['year'].isna())
             ]
-        candidates = candidates[candidates['movieId'] != query_movie_id
-
-System: query_movie_id]
+        candidates = candidates[candidates['movieId'] != query_movie_id]  # Fixed syntax error
         if user_id is not None:
             user_ratings = self.ratings[self.ratings['userId'] == user_id]
             seen_movies = user_ratings['movieId'].unique()
