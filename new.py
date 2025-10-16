@@ -19,8 +19,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Google Drive direct download URLs (replace with your actual links)
-MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=YOUR_MOVIES_FILE_ID"
-RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=YOUR_RATINGS_FILE_ID"
+MOVIES_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1wZY1z-YfHAPZMRVYcx8rD8MeR4t_c_nC"
+RATINGS_GDRIVE_URL = "https://drive.google.com/uc?export=download&id=1pR3LYyvl7kUIJ0R0KkGoOYN8DKhNOIFJ"
 
 class EnhancedMovieRecommender:
     def __init__(self, movies_url=MOVIES_GDRIVE_URL, ratings_url=RATINGS_GDRIVE_URL):
