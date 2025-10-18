@@ -63,15 +63,7 @@ if movies_file and ratings_file:
     selected_movie = st.selectbox("Select a movie:", movie_list)
     user_id_input = st.text_input("Enter user ID (optional for personalization):", value="")
     top_n = st.slider('Number of recommendations', 5, 15, 10)
-    diversity_weight = st.slider('Diversity Weight (0 = no diversity, 1 = max diversity)', 0.0, 1.0, 0.2)
-    
-    def compute_diversity_score(selected_ids, candidate_id, tfidf_matrix):
-        """Compute diversity as average cosine distance to selected movies."""
-        if not selected_ids:
-            return 0.0
-        cand_vector = tfidf_matrix.loc[candidate_id].values
-        distances = [cosine(cand_vector, tfidf_matrix.loc[sid].values) for sid in selected_ids]
-        return np.mean(distances) if distances else 0.0
+    diversity_weight = st.slider('Diversity Weight (0 = no diversity, 1 = max diversity)', 0.0, 1.0, 0.0)
     
     def predict_user_rating(user_id, movie_id, user_similarity_df, ratings, global_avg):
         if user_id not in user_similarity_df.index:
@@ -86,7 +78,7 @@ if movies_file and ratings_file:
         user_avg = ratings[ratings['userId'] == user_id]['rating'].mean() or global_avg
         
         for sim_user_id, similarity in similar_users.items():
-            if similarity < 0.2:  # Stricter similarity threshold
+            if similarity < 0.2:  # Stricter threshold for better personalization
                 break
             user_ratings = ratings[(ratings['userId'] == sim_user_id) & (ratings['movieId'] == movie_id)]
             if not user_ratings.empty:
@@ -103,7 +95,7 @@ if movies_file and ratings_file:
             movie_row = movies[movies['movieId'] == movie_id]
             return movie_row['weighted_rating'].iloc[0] if not movie_row.empty else global_avg
     
-    def recommend_similar_movies(query_movie_title, user_id=None, top_n=10, diversity_weight=0.2):
+    def recommend_similar_movies(query_movie_title, user_id=None, top_n=10, diversity_weight=0.0):
         query_movie = movies[movies['title'] == query_movie_title]
         if query_movie.empty:
             return "Movie not found."
@@ -156,35 +148,36 @@ if movies_file and ratings_file:
         
         # Normalize similarity
         candidates['similarity'] = candidates['similarity'] / candidates['similarity'].max() if candidates['similarity'].max() > 0 else 1.0
-        
-        # Compute initial scores with baseline diversity
         candidates['quality_score'] = candidates['predicted_rating']
-        candidates['diversity_score'] = [compute_diversity_score([], row['movieId'], tfidf_matrix) for _, row in candidates.iterrows()]
-        candidates['combined_score'] = (
-            (1 - diversity_weight) * candidates['similarity'] * candidates['quality_score'] +
-            diversity_weight * candidates['diversity_score'] * candidates['quality_score']
-        )
+        candidates['combined_score'] = candidates['similarity'] * candidates['quality_score']
         
-        # Select top candidates with diversity
-        selected_movies = []
-        remaining_candidates = candidates.sort_values('combined_score', ascending=False).head(top_n * 2)
-        
-        while len(selected_movies) < top_n and not remaining_candidates.empty:
-            top_movie = remaining_candidates.iloc[0]
-            selected_movies.append(top_movie)
-            remaining_candidates = remaining_candidates.iloc[1:]
+        # Apply diversity adjustment if diversity_weight > 0
+        if diversity_weight > 0:
+            top_candidates = candidates.sort_values('combined_score', ascending=False).head(top_n * 2)
+            selected_movies = []
+            remaining_candidates = top_candidates.copy()
             
-            if diversity_weight > 0 and len(selected_movies) > 1:
-                selected_ids = [m['movieId'] for m in selected_movies]
-                div_scores = [compute_diversity_score(selected_ids, row['movieId'], tfidf_matrix) for _, row in remaining_candidates.iterrows()]
-                remaining_candidates['diversity_score'] = div_scores
-                remaining_candidates['combined_score'] = (
-                    (1 - diversity_weight) * remaining_candidates['similarity'] * remaining_candidates['quality_score'] +
-                    diversity_weight * remaining_candidates['diversity_score'] * remaining_candidates['quality_score']
-                )
-                remaining_candidates = remaining_candidates.sort_values('combined_score', ascending=False)
-        
-        top_recs = pd.DataFrame(selected_movies).head(top_n)
+            while len(selected_movies) < top_n and not remaining_candidates.empty:
+                top_movie = remaining_candidates.iloc[0]
+                selected_movies.append(top_movie)
+                remaining_candidates = remaining_candidates.iloc[1:]
+                
+                if len(selected_movies) > 1:
+                    selected_ids = [m['movieId'] for m in selected_movies]
+                    div_scores = []
+                    for _, cand in remaining_candidates.iterrows():
+                        cand_vector = tfidf_matrix.loc[cand['movieId']].values
+                        avg_dist = np.mean([cosine(cand_vector, tfidf_matrix.loc[sid].values) for sid in selected_ids])
+                        div_scores.append(avg_dist)
+                    remaining_candidates['diversity_score'] = div_scores
+                    remaining_candidates['combined_score'] = (
+                        (1 - diversity_weight) * remaining_candidates['combined_score'] +
+                        diversity_weight * remaining_candidates['diversity_score'] * remaining_candidates['quality_score']
+                    )
+                    remaining_candidates = remaining_candidates.sort_values('combined_score', ascending=False)
+            top_recs = pd.DataFrame(selected_movies).head(top_n)
+        else:
+            top_recs = candidates.sort_values('combined_score', ascending=False).head(top_n)
         
         results = []
         for _, row in top_recs.iterrows():
@@ -224,15 +217,15 @@ if movies_file and ratings_file:
                 
                 for i, (title, explanation, pred_rating, score) in enumerate(recs, 1):
                     with st.expander(f"{i}. {title} (Score: {score:.3f})"):
-                        st.markdown(f"**Details**: {explanation}")  # Use markdown for consistent rendering
+                        st.write(f"**Explanation**: {explanation}")  # Ensure explanation is displayed
                         query_genres = set(movies[movies['title'] == selected_movie]['genres_list'].iloc[0])
                         rec_movie = movies[movies['title'] == title]
                         if not rec_movie.empty:
                             rec_genres = set(rec_movie['genres_list'].iloc[0])
                             shared = query_genres.intersection(rec_genres)
-                            st.markdown(f"🎨 **Shared Genres** ({len(shared)}/{len(query_genres)}): {', '.join(list(shared)) or 'None'}")
+                            st.write(f"🎨 **Shared Genres** ({len(shared)}/{len(query_genres)}): {', '.join(list(shared)) or 'None'}")
                         else:
-                            st.markdown("🎨 **Shared Genres**: Not available (movie not found)")
+                            st.write("🎨 **Shared Genres**: Not available (movie not found)")
                 
                 if len(recs) > 0:
                     scores = [r[3] for r in recs]
