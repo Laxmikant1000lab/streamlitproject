@@ -210,7 +210,7 @@ if movies_file and ratings_file:
                 # Show recommendation statistics
                 if len(recs) > 0:
                     scores = [r[3] for r in recs]
-                    avg_similarity = np.mean([r[1].split('Similarity: ')[1].split(' |')[0] for r in recs])
+                    avg_similarity = np.mean([float(r[1].split('Similarity: ')[1].split(' |')[0]) for r in recs])
                     st.metric("Average Similarity", f"{float(avg_similarity):.2f}")
                     st.metric("Recommendation Range", f"{min(scores):.3f} - {max(scores):.3f}")
 
