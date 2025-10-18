@@ -67,38 +67,32 @@ if movies_file and ratings_file:
     top_n = st.slider('Number of recommendations', 5, 15, 10)
     
     def predict_user_rating(user_id, movie_id, user_similarity_df, ratings, global_avg):
-        """Predict user's rating using collaborative filtering."""
         if user_id not in user_similarity_df.index:
-            # Fallback to global weighted rating
             movie_row = movies[movies['movieId'] == movie_id]
             return movie_row['weighted_rating'].iloc[0] if not movie_row.empty else global_avg
         
-        # Find similar users
         user_idx = user_similarity_df.index.get_loc(user_id)
         similar_users = user_similarity_df.iloc[user_idx].sort_values(ascending=False).iloc[1:11]
         
         total_weight = 0
         weighted_sum = 0
+        user_avg = ratings[ratings['userId'] == user_id]['rating'].mean() or global_avg
         
         for sim_user_id, similarity in similar_users.items():
-            if similarity < 0.1:  # Similarity threshold
+            if similarity < 0.1:
                 break
-            
-            # Get similar user's rating for this movie
             user_ratings = ratings[(ratings['userId'] == sim_user_id) & (ratings['movieId'] == movie_id)]
             if not user_ratings.empty:
                 rating = user_ratings['rating'].iloc[0]
-                # Adjust for user's average rating bias
-                user_avg = ratings[ratings['userId'] == sim_user_id]['rating'].mean()
-                adjusted_rating = rating - user_avg + global_avg
+                sim_user_avg = ratings[ratings['userId'] == sim_user_id]['rating'].mean() or global_avg
+                adjusted_rating = rating - sim_user_avg + user_avg
                 weighted_sum += similarity * adjusted_rating
                 total_weight += similarity
         
         if total_weight > 0:
-            prediction = global_avg + weighted_sum / total_weight
+            prediction = weighted_sum / total_weight
             return np.clip(prediction, 0.5, 5.0)
         else:
-            # Fallback to movie's weighted rating
             movie_row = movies[movies['movieId'] == movie_id]
             return movie_row['weighted_rating'].iloc[0] if not movie_row.empty else global_avg
     
@@ -109,12 +103,11 @@ if movies_file and ratings_file:
         
         query_movie_id = query_movie['movieId'].iloc[0]
         if query_movie_id not in tfidf_matrix.index:
-            return "Movie not found."
+            return "Movie not found in TF-IDF matrix."
         
         query_vector = tfidf_matrix.loc[query_movie_id].values
         query_genres = set(query_movie['genres_list'].iloc[0])
         
-        # Compute content-based similarities
         similarities = {}
         for movie_id in tfidf_matrix.index:
             if movie_id == query_movie_id:
@@ -134,7 +127,6 @@ if movies_file and ratings_file:
         candidates = candidates[candidates['num_ratings'] >= m]
         candidates = candidates[candidates['similarity'] >= 0.1]
         
-        # Personalization: Exclude seen movies and predict ratings
         if user_id and user_id != "":
             try:
                 user_id_int = int(user_id)
@@ -142,7 +134,6 @@ if movies_file and ratings_file:
                 seen_movies = user_ratings['movieId'].unique()
                 candidates = candidates[~candidates['movieId'].isin(seen_movies)]
                 
-                # Compute personalized predicted ratings
                 predicted_ratings = []
                 for _, row in candidates.iterrows():
                     pred_rating = predict_user_rating(
@@ -156,22 +147,23 @@ if movies_file and ratings_file:
         else:
             candidates['predicted_rating'] = candidates['weighted_rating']
         
-        # Compute final scores
-        candidates['quality_score'] = candidates['predicted_rating']
-        candidates['combined_score'] = candidates['similarity'] * candidates['quality_score']
+        # Normalize similarity to prevent inflated scores
+        candidates['similarity'] = candidates['similarity'] / candidates['similarity'].max() if candidates['similarity'].max() > 0 else 1.0
+        candidates['combined_score'] = candidates['similarity'] * candidates['predicted_rating']
         
-        # Sort and get top recommendations
         top_recs = candidates.sort_values('combined_score', ascending=False).head(top_n)
         
         results = []
         for _, row in top_recs.iterrows():
             shared_genres = query_genres.intersection(set(row['genres_list']))
+            sim = row['similarity'] if not np.isnan(row['similarity']) else 0.0
+            pred = row['predicted_rating'] if not np.isnan(row['predicted_rating']) else global_avg
             explanation = (
-                f"Similarity: {row['similarity']:.2f} | "
-                f"{'Predicted' if user_id else 'Weighted'} Rating: {row['predicted_rating']:.2f} | "
-                f"Shared Genres: {', '.join(list(shared_genres)[:3])}"
+                f"Similarity: {sim:.2f} | "
+                f"{'Predicted' if user_id else 'Weighted'} Rating: {pred:.2f} | "
+                f"Shared Genres: {', '.join(list(shared_genres)[:3]) or 'None'}"
             )
-            results.append((row['title'], explanation, row['predicted_rating'], row['combined_score']))
+            results.append((row['title'], explanation, pred, row['combined_score']))
         
         return results
     
